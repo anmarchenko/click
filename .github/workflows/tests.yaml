@@ -13,6 +13,8 @@ jobs:
   tests:
     name: ${{ matrix.name || matrix.python }}
     runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    env:
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}
     strategy:
       fail-fast: false
       matrix:
@@ -36,7 +38,45 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
-      - run: uv run --locked --no-default-groups --group dev tox run
+      - name: Install ddtest
+        if: env.DD_API_KEY != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p bin
+          curl -fsSL https://github.com/DataDog/ddtest/releases/download/v1.11.0/ddtest-${{ runner.os == 'Linux' && 'linux' || 'darwin' }}-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }} -o bin/ddtest
+          chmod +x bin/ddtest
+      - name: Install ddtest
+        if: env.DD_API_KEY != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force bin | Out-Null
+          Invoke-WebRequest https://github.com/DataDog/ddtest/releases/download/v1.11.0/ddtest-windows-${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}.exe -OutFile bin/ddtest.exe
+      - name: Configure Datadog Test Optimization
+        if: env.DD_API_KEY != ''
+        uses: datadog/test-visibility-github-action@1abae93083b69778facd7ee11f89184306c999e6 # v3
+        with:
+          languages: python
+          api_key: ${{ env.DD_API_KEY }}
+          site: datadoghq.com
+      - name: Run tests with Datadog Test Parallelization
+        if: env.DD_API_KEY != '' && runner.os != 'Windows'
+        shell: bash
+        run: |
+          rm -rf .testoptimization
+          bin/ddtest run --platform python --framework pytest --min-parallelism 1 --max-parallelism 4 --worker-env "TOX_WORK_DIR=.tox/ddtest-{{workerIndex}}" --command "uv run --locked --no-default-groups --group dev tox run --"
+        env:
+          TOX_ENV: ${{ matrix.tox || format('py{0}', matrix.python) }}
+      - name: Run tests with Datadog Test Parallelization
+        if: env.DD_API_KEY != '' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force .testoptimization -ErrorAction SilentlyContinue
+          ./bin/ddtest.exe run --platform python --framework pytest --min-parallelism 1 --max-parallelism 4 --worker-env "TOX_WORK_DIR=.tox/ddtest-{{workerIndex}}" --command "uv run --locked --no-default-groups --group dev tox run --"
+        env:
+          TOX_ENV: ${{ matrix.tox || format('py{0}', matrix.python) }}
+      - name: Run tests without Datadog
+        if: env.DD_API_KEY == ''
+        run: uv run --locked --no-default-groups --group dev tox run
         env:
           TOX_ENV: ${{ matrix.tox || format('py{0}', matrix.python) }}
   typing:
